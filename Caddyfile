@@ -1,0 +1,13 @@
+db.es03 {
+	tls internal
+
+    handle_path /portal/* {
+        root * /home/jcake/Code/simple-database-server/control-panel/build/
+        try_files {path} /index.html
+        file_server
+	}
+
+	handle {
+	    reverse_proxy localhost:2003
+	}
+}

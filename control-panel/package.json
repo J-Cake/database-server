@@ -1,0 +1,28 @@
+{
+    "name": "control-panel",
+    "build": "./build.js",
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "build": "node ./build.js"
+    },
+    "dependencies": {
+        "mousetrap": "^1.6.5",
+        "mousetrap-global-bind": "^1.1.0",
+        "react": "^19.1.0",
+        "react-dom": "^19.1.0"
+    },
+    "devDependencies": {
+        "@types/mousetrap": "^1.6.15",
+        "@types/node": "^22.15.21",
+        "@types/react": "^19.1.5",
+        "@types/react-dom": "^19.1.5",
+        "@types/wicg-file-system-access": "^2023.10.6",
+        "esbuild": "^0.25.4"
+    },
+    "deploy": {
+        "main": "run.js",
+        "imports": null,
+        "scripts": null
+    }
+}

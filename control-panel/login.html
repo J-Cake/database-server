@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Login</title>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
+</head>
+<body>
+<script type="module">
+    const query = new URLSearchParams(window.location.search);
+
+	if (query.has('code')) {
+		document.body.innerText = 'Logging in...';
+		const res = await fetch('https://db.es03/oauth', {
+			method: 'POST',
+            body: JSON.stringify(Object.fromEntries(query.entries())),
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+
+		const token = await res.json();
+
+		if ('token' in token) {
+			window.localStorage.setItem('token', token.token);
+            window.localStorage.setItem('user', token.user);
+			window.localStorage.setItem('expiry', String(new Date().getTime() + 1000 * token.expires_in));
+			window.localStorage.setItem('refresh', token.refresh);
+
+			window.location.href = '/portal/index.html';
+        }
+	} else {
+		const token = window.localStorage.getItem('token');
+
+        if (token) {
+            window.location.href = '/portal/index.html';
+        } else {
+			const a = document.createElement('a');
+			const oauth = await fetch('https://db.es03/oauth')
+                .then(res => res.json());
+
+			const url = new URL(oauth.authorisation);
+			url.searchParams.append('response_type', 'code');
+			url.searchParams.append('client_id', oauth.client_id);
+	        url.searchParams.append('redirect_uri', oauth.redirect);
+
+	        a.href = url;
+			a.innerText = 'Login';
+
+            document.body.appendChild(a);
+        }
+    }
+</script>
+
+</body>
+</html>
