@@ -2,6 +2,7 @@ import React from 'react';
 import dom from 'react-dom/client';
 import Router, {Link, Redirect, Route} from "./router.js";
 import ListDatabases from "./list-databases.js";
+import CreateDatabasePage from "./create-database.js";
 
 export default function main(root: HTMLElement) {
     dom.createRoot(root)
@@ -11,6 +12,9 @@ export default function main(root: HTMLElement) {
             </Route>
             <Route matcher={"/portal/login.html"}>
                 <LoginPage/>
+            </Route>
+            <Route matcher={"/portal/create-database.html"}>
+                <CreateDatabasePage />
             </Route>
         </Router>);
 }

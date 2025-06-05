@@ -1,10 +1,12 @@
-use crate::{generate_token, Token};
+use crate::generate_token;
+use crate::index::push_change;
+use crate::index::DBIndexChange;
 use crate::DBIndex;
 use crate::OAuthSettings;
+use crate::Token;
 use actix_web::get;
 use actix_web::post;
 use actix_web::web;
-use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web::Responder;
 use chrono::DateTime;
@@ -12,7 +14,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 use std::time::SystemTime;
-use crate::index::{push_change, DBIndexChange};
 
 #[derive(Debug, Deserialize)]
 struct OAuthCode {
@@ -29,7 +30,7 @@ struct OAuthResponse {
 
 #[post("/oauth")]
 pub async fn oauth(index: web::Data<OAuthSettings>, body: web::Json<OAuthCode>, client: web::Data<reqwest::Client>) -> actix_web::Result<impl Responder> {
-    let oauth_response = client
+    let oauth_response: OAuthResponse = match client
         .post(&index.token)
         .json(&json! {{
             "grant_type": "authorization_code",
@@ -40,25 +41,20 @@ pub async fn oauth(index: web::Data<OAuthSettings>, body: web::Json<OAuthCode>, 
         }})
         .send()
         .await
-        .map_err(|err| {
-            actix_web::error::ErrorNotAcceptable(json! {{
+    {
+        Ok(resp) => match resp.json().await {
+            Ok(json) => json,
+            Err(err) => return Ok(HttpResponse::BadRequest().json(json! {{
                 "success": false,
                 "error": err.to_string()
-            }})
-        })?
-        .text()
-        .await
-        .map(|i| {
-            log::debug!("Got oauth response: {}", i);
-            serde_json::from_str::<OAuthResponse>(&i).unwrap()
-        })
-        .map_err(|err| {
-            log::error!("Failed to parse oauth response: {:?}", err);
-            actix_web::error::ErrorInternalServerError(json! {{
+            }})),
+        },
+        Err(err) =>
+            return Ok(HttpResponse::BadRequest().json(json! {{
                 "success": false,
                 "error": err.to_string()
-            }})
-        })?;
+            }})),
+    };
 
     let (token, refresh) = futures::future::join(generate_token(64), generate_token(128)).await;
 
@@ -86,7 +82,7 @@ pub async fn oauth(index: web::Data<OAuthSettings>, body: web::Json<OAuthCode>, 
     })
     .await;
 
-    Ok(web::Json(json! {{
+    Ok(HttpResponse::Ok().json(json! {{
         "success": true,
         "token": token,
         "refresh": refresh,
@@ -116,9 +112,12 @@ pub async fn refresh_token(body: web::Json<RefreshTokenRequest>, index: web::Dat
     let Some((user, token)) = index
         .users
         .iter()
-        .filter_map(|user| user.api.iter()
-            .find(|token| token.refresh == body.refresh)
-            .map(|token| (user, token.clone())))
+        .filter_map(|user| {
+            user.api
+                .iter()
+                .find(|token| token.refresh == body.refresh)
+                .map(|token| (user, token.clone()))
+        })
         .next()
     else {
         return Ok(HttpResponse::Unauthorized().json(json! {{
@@ -129,25 +128,25 @@ pub async fn refresh_token(body: web::Json<RefreshTokenRequest>, index: web::Dat
 
     let (new_token, new_refresh) = match futures::future::join(generate_token(64), generate_token(128)).await {
         (Ok(token), Ok(refresh)) => (token, refresh),
-        _ => return Ok(HttpResponse::InternalServerError().json(json! {{
-            "success": false,
-            "error": "Failed to generate new token"
-        }}))
+        _ =>
+            return Ok(HttpResponse::InternalServerError().json(json! {{
+                "success": false,
+                "error": "Failed to generate new token"
+            }})),
     };
 
     push_change([
-        DBIndexChange::InvalidateUserToken {
-            token: token.clone(),
-        },
+        DBIndexChange::InvalidateUserToken { token: token.clone() },
         DBIndexChange::RefreshUserToken {
             user: user.id.clone(),
             token: Token {
                 token: new_token.clone(),
                 refresh: new_refresh.clone(),
                 expiry: DateTime::from(SystemTime::now() + Duration::from_hours(12)),
-            }
-        }
-    ]).await;
+            },
+        },
+    ])
+    .await;
 
     Ok(HttpResponse::Ok().json(json! {{
         "success": true,

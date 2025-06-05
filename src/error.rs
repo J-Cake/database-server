@@ -85,3 +85,18 @@ impl std::fmt::Display for TokenError {
         std::fmt::Debug::fmt(self, f)
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum AppError {
+    MissingToken,
+    InvalidToken,
+    ExpiredToken,
+    NoApp,
+}
+
+impl std::error::Error for AppError {}
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}

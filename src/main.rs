@@ -1,10 +1,12 @@
 #![feature(duration_constructors)]
 
-mod database;
+mod resources;
 mod error;
 mod oauth;
 mod index;
-mod authenticator;
+mod db;
+mod auth;
+mod app;
 
 use crate::error::*;
 use actix_web::dev::{Payload, Service, ServiceRequest};
@@ -49,49 +51,50 @@ struct Args {
     database_dir: PathBuf,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseIndex {
-    databases: Vec<Database>,
-    apps: Vec<Application>,
-    users: Vec<User>,
-    oauth_settings: OAuthSettings,
+    pub databases: Vec<Database>,
+    pub apps: Vec<Application>,
+    pub users: Vec<User>,
+    pub oauth_settings: OAuthSettings,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Database {
-    name: String,
-    id: DatabaseID,
-    ro: Vec<UserID>,
-    rw: Vec<UserID>,
-    apps: Vec<AppID>,
-    pages: Vec<Page>,
-    owner: UserID,
+    pub name: String,
+    pub id: DatabaseID,
+    pub ro: Vec<UserID>,
+    pub rw: Vec<UserID>,
+    pub apps: Vec<AppID>,
+    pub pages: Vec<Page>,
+    pub root: PathBuf,
+    pub owner: UserID,
 }
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Page {
-    name: String,
-    content: PathBuf,
-    type_hint: String,
+    pub name: String,
+    pub content: PathBuf,
+    pub type_hint: String,
 }
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Application {
-    name: String,
-    id: AppID,
-    owner: UserID,
-    token: String,
+    pub name: String,
+    pub id: AppID,
+    pub owner: UserID,
+    pub token: Token,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct User {
-    oauth: Vec<Token>,
-    api: Vec<Token>,
-    id: UserID,
+    pub oauth: Vec<Token>,
+    pub api: Vec<Token>,
+    pub id: UserID,
 }
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthSettings {
-    client_id: String,
-    client_secret: String,
-    redirect: String,
-    authorisation: String,
-    token: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect: String,
+    pub authorisation: String,
+    pub token: String,
 }
 pub type DatabaseID = String;
 pub type UserID = String;
@@ -122,7 +125,18 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let args = Args::parse();
-    let mut db = DatabaseIndex::default();
+    let mut db = DatabaseIndex {
+        databases: vec![],
+        apps: vec![],
+        users: vec![],
+        oauth_settings: OAuthSettings {
+            client_id: "".to_string(),
+            client_secret: "".to_string(),
+            redirect: "".to_string(),
+            authorisation: "".to_string(),
+            token: "".to_string(),
+        },
+    };
 
     let index = args.database_dir.join("index.json");
 
@@ -138,18 +152,22 @@ async fn main() -> Result<()> {
     let db = DBIndex(Arc::new(Mutex::new(db)));
     index::handle_changes(args.clone(), db.clone());
 
+    let addr = args.address;
+
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(oauth_settings.clone()))
             .app_data(web::Data::new(reqwest::Client::new()))
             .app_data(web::Data::new(db.clone()))
+            .app_data(web::Data::new(args.clone()))
             .service(oauth::oauth)
             .service(oauth::refresh_token)
             .service(oauth::get_oauth_details)
-            .service(database::get_databases)
+            .service(resources::get_databases)
+            .service(resources::create_database)
     })
         .workers(1)
-        .bind(args.address)?
+        .bind(addr)?
         .run()
         .await?;
 

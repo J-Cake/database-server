@@ -19,6 +19,7 @@ pub enum DBIndexChange {
         token: Token,
     },
     RefreshUserToken { user: String, token: Token },
+    Resync,
 }
 
 impl IntoIterator for DBIndexChange {
@@ -94,7 +95,8 @@ pub fn handle_changes(args: Args, db: DBIndex) {
                 },
                 DBIndexChange::RefreshUserToken { user: user_id, token } => if let Some(user) = db.users.iter_mut().find(|user| user.id == user_id) {
                     user.api.push(token);
-                }
+                },
+                DBIndexChange::Resync => ()
             }
 
             match serde_json::to_string_pretty(db.deref()) {
