@@ -1,6 +1,6 @@
 # Database server
 
-I love postgres but it's way to complicated to set up and often way overkill for the stuff I wanna do with it. 
+I love postgres but it's way too complicated to set up and often way overkill for the stuff I wanna do with it. 
 I want a database that uses very little resources, is file-backed, I can use with my Obsidian notebook and is web-accessible with good security. 
 I'm sure there's a solution out there, but I've always wanted to build database, so why not.
 
