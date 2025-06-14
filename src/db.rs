@@ -6,16 +6,7 @@ use crate::app::ValidatedApp;
 #[derive(Deserialize)]
 pub struct DBCall {
     pub object: String,
-    pub action: Action,
     pub query: String,
-}
-
-#[derive(Deserialize)]
-pub enum Action {
-    Create,
-    Read,
-    Update,
-    Delete
 }
 
 #[post("/query")]
