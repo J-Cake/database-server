@@ -56,7 +56,6 @@ multi_error! { global();
 
 pub type Result<T> = ::std::result::Result<T, global::Error>;
 pub use global::Error;
-use crate::rw::FragmentDescriptor;
 
 #[derive(Debug, Clone)]
 pub enum ManualError {
@@ -74,6 +73,7 @@ impl std::fmt::Display for ManualError {
 #[derive(Debug, Clone)]
 pub enum FragmentError {
     NoFound(crate::FragmentID),
+    MissingRootFragment,
     InvalidFragmentTable,
     InvalidMagic,
     InvalidTable,

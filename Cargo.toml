@@ -18,6 +18,10 @@ base64 = "0.22.1"
 futures = "0.3.31"
 chrono = { version = "0.4.41", features = ["serde"] }
 libc = "0.2.172"
+libdb = { path = "libdb" }
 
 [build-dependencies]
 pkg-config = "0.3.32"
+
+[workspace]
+members = ["libdb"]
