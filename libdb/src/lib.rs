@@ -1,47 +1,54 @@
 #![feature(btree_cursors)]
 extern crate core;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use crate::rw::RWFragmentStore;
 use error::*;
+use std::collections::HashMap;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::SystemTime;
 
 pub mod error;
-mod store;
 mod rw;
+mod rwslice;
+mod store;
 
 pub struct Database {
-    index: Index
+    backing: RWFragmentStore<File>,
 }
 
 impl Database {
     pub fn open(index: impl AsRef<Path>) -> Result<Self> {
-        let index = Index {
-            magic: 0,
-            version: 0,
-            name: "".to_string(),
-            fragments: Default::default(),
-        };
-
-        Ok(Self { index })
+        if index.as_ref().exists() {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(index)?;
+            
+            Ok(Self { backing: RWFragmentStore::new(file)? })
+        } else {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .truncate(true)
+                .open(index)?;
+            
+            Ok(Self { backing: RWFragmentStore::blank(file)? })
+        }
     }
 }
 
-pub struct Index {
-    magic: u32,
-    version: u32,
-    name: String,
-    fragments: HashMap<FragmentID, PathBuf>
-}
-
-pub type FragmentID = u32;
+pub type FragmentID = u64;
 
 pub struct Fragment {
     id: FragmentID,
     hash: FragmentHash,
     timestamp: SystemTime,
     sequence: u64,
-    data: Vec<u8>
+    data: Vec<u8>,
 }
 
 impl Fragment {
@@ -66,10 +73,5 @@ pub enum Value {
     Blob(Vec<u8>),
 
     // A collection of other fragments
-    Collection {
-        expected_length: u64,
-        continuation: Option<FragmentID>,
-
-        page: Vec<FragmentID>
-    }
+    Collection { expected_length: u64, continuation: Option<FragmentID>, page: Vec<FragmentID> },
 }

@@ -1,6 +1,6 @@
 use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
-use crate::{Fragment, FragmentID, Index};
+use crate::{Fragment, FragmentID};
 use crate::error::{FragmentError, Result};
 
 pub trait FragmentStore {
