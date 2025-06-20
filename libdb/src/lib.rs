@@ -1,4 +1,6 @@
 #![feature(btree_cursors)]
+#![feature(exact_size_is_empty)]
+
 extern crate core;
 
 use crate::rw::RWFragmentStore;
@@ -15,6 +17,7 @@ mod rw;
 mod rwslice;
 mod store;
 
+#[derive(Debug)]
 pub struct Database {
     backing: RWFragmentStore<File>,
 }

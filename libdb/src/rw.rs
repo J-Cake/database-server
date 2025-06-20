@@ -1,27 +1,27 @@
-use std::collections::{BTreeMap, BTreeSet, Bound};
 use crate::error::FragmentError;
 use crate::error::Result;
+use crate::rwslice::BoundedSection;
 use crate::store::FragmentStore;
 use crate::Fragment;
 use crate::FragmentID;
-use std::io::{BufWriter, Read};
+use std::collections::BTreeMap;
+use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
-use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 use std::time::SystemTime;
-use crate::rwslice::BoundedSection;
 
 const PAGE_SIZE: usize = 4096;
 
-pub trait Storage
+pub trait Storage<Backing>
 where
+    Backing: Read + Write + Seek,
     Self: Sized, {
     /// Read a value from a buffer.
     /// Assumes the buffer's cursor is set to the beginning of the structure it aims to read. May fail silently if not.
-    fn read<Buffer: Read + Seek>(buffer: Buffer) -> Result<Self>;
-    fn write<Buffer: Write + Seek>(&self, buffer: Buffer) -> Result<()>;
+    fn read(buffer: Backing) -> Result<Self>;
+    fn write(&mut self, buffer: Backing) -> Result<()>;
 }
 
 pub trait KnownSize {
@@ -57,8 +57,8 @@ const FRAG_MAGIC: [u8; 4] = *b"FRAG";
 ///
 /// This format balances safety and space-efficiency but relies on external logic
 /// to ensure correct buffer positioning and integrity guarantees.
-impl Storage for Fragment {
-    fn read<Backing: Read + Seek>(mut source: Backing) -> Result<Self> {
+impl<Backing: Read + Write + Seek> Storage<Backing> for Fragment {
+    fn read(mut source: Backing) -> Result<Self> {
         let mut buffer = vec![0u8; Fragment::size()];
         source.read_exact(&mut buffer)?;
 
@@ -86,7 +86,7 @@ impl Storage for Fragment {
         .validate_hash()
     }
 
-    fn write<Backing: Write + Seek>(&self, source: Backing) -> Result<()> {
+    fn write(&mut self, source: Backing) -> Result<()> {
         todo!()
     }
 }
@@ -97,6 +97,7 @@ impl KnownSize for Fragment {
     }
 }
 
+#[derive(Debug)]
 pub struct RWFragmentStore<Backing: Read + Write + Seek> {
     backing: Backing,
     header: RWFragmentStoreIndex,
@@ -106,8 +107,7 @@ impl<Backing: Read + Write + Seek> FragmentStore for RWFragmentStore<Backing> {
     fn read_fragment(&mut self, id: FragmentID) -> Result<Fragment> {
         if let Some(frag) = self
             .header
-            .fragment_table
-            .iter()
+            .fragment_table()
             .filter(|frag| frag.id == id)
             .max_by(|i, j| i.sequence.cmp(&j.sequence))
         {
@@ -138,15 +138,25 @@ impl<Backing: Read + Write + Seek> RWFragmentStore<Backing> {
                 root_fragment: 0,
                 free_space: Default::default(),
                 fragment_table_offset: PAGE_SIZE as Pointer,
-                fragment_table: vec![],
+                fragment_table_parts: vec![FragmentTablePart {
+                    continuation: 0,
+                    fragments: vec![FragmentDescriptor {
+                        id: 0,
+                        sequence: 0,
+                        offset: 2 * PAGE_SIZE as Pointer,
+                        length: PAGE_SIZE as u64,
+                    }],
+                }],
+                end: 3 * PAGE_SIZE as Pointer,
             },
             backing,
-        }.save()
+        }
+        .save()
     }
 
     fn save(mut self) -> Result<Self> {
         self.header.write(&mut self.backing)?;
-        
+
         Ok(self)
     }
 }
@@ -169,45 +179,50 @@ const RWFS_MAGIC: [u8; 4] = *b"RWFS";
 /// ```
 ///
 /// All values are encoded in little-endian format.
+#[derive(Debug)]
 struct RWFragmentStoreIndex {
     version: u32,
     root_fragment: FragmentID,
     free_space: BTreeMap<u64, Vec<Pointer>>,
     fragment_table_offset: Pointer,
-    fragment_table: Vec<FragmentDescriptor>,
+    fragment_table_parts: Vec<FragmentTablePart>,
+
+    /// Keeps a reference to the end of the backing buffer. Is useful when appending a new chunk.
+    end: Pointer
 }
 
-impl KnownSize for RWFragmentStoreIndex {
-    fn size() -> usize {
-        24
-    }
-}
-
-impl Storage for RWFragmentStoreIndex {
-    fn read<Backing: Read + Seek>(mut source: Backing) -> Result<Self> {
+impl<Backing: Read + Write + Seek> Storage<Backing> for RWFragmentStoreIndex {
+    fn read(mut source: Backing) -> Result<Self> {
         source.seek(SeekFrom::Start(0))?;
-        let mut buffer = vec![0u8; 24];
+        let mut buffer = vec![0u8; Self::size()];
         source.read_exact(&mut buffer)?;
 
         if buffer[0..4] != RWFS_MAGIC {
             return Err(FragmentError::InvalidMagic.into());
         }
 
-        let mut fragment_table = Vec::new();
         let fragment_table_offset = u64::from_le_bytes(buffer[16..24].try_into()?);
         source.seek(SeekFrom::Start(fragment_table_offset))?;
 
         let root_fragment = FragmentID::from_le_bytes(buffer[8..16].try_into()?);
+        let mut prev_offset = fragment_table_offset;
+        let mut end = fragment_table_offset;
+        let mut fragment_table_parts = vec![];
 
         loop {
             let mut chunk = FragmentTablePart::read(&mut source)?;
-            fragment_table.append(&mut chunk.fragments);
 
-            if chunk.continuation == 0 {
-                break;
-            }
+            end = end.max(prev_offset + chunk.cap() as Pointer);
 
             source.seek(SeekFrom::Start(chunk.continuation))?;
+            prev_offset = chunk.continuation;
+
+            let continuation = chunk.continuation;
+            fragment_table_parts.push(chunk);
+            
+            if continuation == 0 {
+                break;
+            }
         }
 
         let mut free_space = BTreeMap::new();
@@ -218,22 +233,24 @@ impl Storage for RWFragmentStoreIndex {
         2. The fragment list is iterated. The previous fragment is determined by
          */
 
-        let mut slots = fragment_table.iter().collect::<Vec<_>>();
+        let mut slots = fragment_table_parts.iter().flat_map(|i| i.fragments.iter()).collect::<Vec<_>>();
         slots.sort_by_key(|slot| slot.offset);
 
         // Iterate over the slots pair-wise. Their gaps are appended to the `free_space` map.
 
         for i in slots.windows(2) {
             if let [a, b] = *i {
+                end = end
+                    .max(a.offset + a.length)
+                    .max(b.offset + b.length);
+
                 let offset = (a.offset + a.length).next_multiple_of(PAGE_SIZE as u64);
 
                 if b.offset > offset {
                     let size = (b.offset - offset).next_multiple_of(PAGE_SIZE as u64) - PAGE_SIZE as u64;
 
                     if size > 0 {
-                        free_space.entry(size)
-                            .or_insert_with(Vec::new)
-                            .push(offset);
+                        free_space.entry(size).or_insert_with(Vec::new).push(offset);
                     }
                 }
             }
@@ -243,70 +260,145 @@ impl Storage for RWFragmentStoreIndex {
             version: u32::from_le_bytes(buffer[4..8].try_into()?),
             root_fragment,
             free_space,
-            fragment_table,
             fragment_table_offset,
+            fragment_table_parts,
+            end,
         })
     }
 
-    fn write<Backing: Write + Seek>(&self, mut source: Backing) -> Result<()> {
+    fn write(&mut self, mut source: Backing) -> Result<()> {
         source.seek(SeekFrom::Start(0))?;
         source.write_all(&RWFS_MAGIC)?;
         source.write_all(&self.version.to_le_bytes())?;
         source.write_all(&self.root_fragment.to_le_bytes())?;
         source.write_all(&self.fragment_table_offset.to_le_bytes())?;
-        
+
         // TODO: Write fragment table
-        
+        source.seek(SeekFrom::Start(self.fragment_table_offset))?;
+
+        for part in &mut self.fragment_table_parts {
+            part.write(&mut source)?;
+            source.seek(SeekFrom::Start(part.continuation))?;
+        }
+
         // Let the OS coalesce adjacent writes - no .flush()
         Ok(())
     }
 }
 
-impl<Backing: Read + Write + Seek> RWFragmentStore<Backing> {
-    fn alloc_fragment(&mut self, options: impl Into<AllocOptions>) -> Result<WritableFragment<Backing>> {
-        // 1. At load time, the DB will analyse all leased spaces and create a map of available space.
-        // 2. When attempting to write a chunk, the database's append-only nature emerges. Using an optional size-hint, the database queries the list of free spaces for a size that could fit.
-        // 3. After locating a space, the database checks that it really is free (because between load and use, the space may have been occupied.
-        // 4. This is confirmed by querying the fragment table for the previous fragment.
-        // 5. If the space is available, then it is returned to the caller.
-        // 6. If its length does not match the expectation from the space map, a state cache condition is raised, and the database will be reindexed.
+impl KnownSize for RWFragmentStoreIndex {
+    fn size() -> usize {
+        24
+    }
+}
 
-        let options = options.into();
+impl RWFragmentStoreIndex {
+    pub fn allocate_fragment(&mut self, min_size: u64) -> Result<(Pointer, u64)> {
+        let size = min_size.next_multiple_of(PAGE_SIZE as u64);
 
-        match options.size_hint {
-            SizeHint::Sized(size) => {
-                let size = size.next_multiple_of(PAGE_SIZE as u64);
+        let ptr = self.free_space
+            .range_mut(size..)
+            .next()
+            .and_then(|(_, i)| i.pop())
+            .unwrap_or(self.end)
+            .next_multiple_of(PAGE_SIZE as u64);
 
-                let (frag, seq) = match options.fragment {
-                    Some(id) => self.header.fragment_table.iter()
-                        .filter(|frag| frag.id == id)
-                        .max_by(|a, b| a.sequence.cmp(&b.sequence))
-                        .map(|frag| (frag.id, frag.sequence))
-                        .unwrap_or((self.next_fragment_id(), 0)),
-                    _ => (self.next_fragment_id(), 0)
-                };
+        self.end = self.end.max(ptr + size);
 
-                for (&size, pointers) in self.header.free_space.range_mut(size..) {
-                    if let Some(ptr) = pointers.pop() {
-                        return Ok(WritableFragment {
-                            buf: &mut self.backing,
-                            fragment: 0,
-                            sequence: 0,
-                            ptr,
-                            size,
-                        });
-                    }
-                }
-            },
-            SizeHint::Growable => todo!()
-        }
-
-        todo!()
+        Ok((ptr, size))
     }
 
-    fn next_fragment_id(&mut self) -> FragmentID {
-        self.header.fragment_table
+    fn mk_fragment_table_part(&mut self) -> Result<&mut FragmentTablePart> {
+        let consumed = self.fragment_table().count() * FragmentDescriptor::size();
+
+        let to_allocate = (consumed.next_multiple_of(PAGE_SIZE) as f64).sqrt().ceil().powi(2) as u64;
+        let (ptr, size) = self.allocate_fragment(to_allocate)?;
+
+        if let Some(last) = self.fragment_table_parts.last_mut() {
+            last.continuation = ptr;
+        } else {
+            self.fragment_table_offset = ptr;
+        }
+
+        assert!(size >= to_allocate);
+        self.fragment_table_parts.push(FragmentTablePart {
+            continuation: 0,
+            fragments: vec![],
+        });
+
+        self.fragment_table_parts.last_mut().ok_or(FragmentError::FailedToCreateNewFragmentTablePart.into())
+    }
+
+    pub fn fragment_table(&self) -> impl Iterator<Item = &FragmentDescriptor> {
+        self.fragment_table_parts
             .iter()
+            .flat_map(|part| part.fragments.iter())
+    }
+
+    pub fn fragment_table_mut(&mut self) -> impl Iterator<Item = &mut FragmentDescriptor> {
+        self.fragment_table_parts
+            .iter_mut()
+            .flat_map(|part| part.fragments.iter_mut())
+    }
+
+    pub fn push_fragment(&mut self, fragment: FragmentDescriptor) -> Result<()> {
+        match self.fragment_table_parts.last_mut() {
+            Some(last) if last.len() < last.cap() => last.fragments.push(fragment),
+            _ => self.mk_fragment_table_part()?.fragments.push(fragment),
+        }
+
+        Ok(())
+    }
+}
+
+impl<Backing: Read + Write + Seek> RWFragmentStore<Backing> {
+    // fn alloc_fragment(&mut self, options: impl Into<AllocOptions>) -> Result<WritableFragment<Backing>> {
+    //     // 1. At load time, the DB will analyse all leased spaces and create a map of available space.
+    //     // 2. When attempting to write a chunk, the database's append-only nature emerges. Using an optional size-hint, the database queries the list of free spaces for a size that could fit.
+    //     // 3. After locating a space, the database checks that it really is free (because between load and use, the space may have been occupied.
+    //     // 4. This is confirmed by querying the fragment table for the previous fragment.
+    //     // 5. If the space is available, then it is returned to the caller.
+    //     // 6. If its length does not match the expectation from the space map, a state cache condition is raised, and the database will be reindexed.
+    //
+    //     let options = options.into();
+    //
+    //     match options.size_hint {
+    //         SizeHint::Sized(size) => {
+    //             let size = size.next_multiple_of(PAGE_SIZE as u64);
+    //
+    //             let (frag, seq) = match options.fragment {
+    //                 Some(id) => self
+    //                     .header
+    //                     .fragment_table
+    //                     .iter()
+    //                     .filter(|frag| frag.id == id)
+    //                     .max_by(|a, b| a.sequence.cmp(&b.sequence))
+    //                     .map(|frag| (frag.id, frag.sequence))
+    //                     .unwrap_or((self.next_fragment_id(), 0)),
+    //                 _ => (self.next_fragment_id(), 0),
+    //             };
+    //
+    //             for (&size, pointers) in self.header.free_space.range_mut(size..) {
+    //                 if let Some(ptr) = pointers.pop() {
+    //                     return Ok(WritableFragment {
+    //                         buf: &mut self.backing,
+    //                         fragment: 0,
+    //                         sequence: 0,
+    //                         ptr,
+    //                         size,
+    //                     });
+    //                 }
+    //             }
+    //         }
+    //         SizeHint::Growable => todo!(),
+    //     }
+    //
+    //     todo!()
+    // }
+
+    fn next_fragment_id(&mut self) -> FragmentID {
+        self.header
+            .fragment_table()
             .max_by(|a, b| a.id.cmp(&b.id))
             .map(|frag| frag.id)
             .unwrap_or(1)
@@ -323,7 +415,7 @@ pub struct AllocOptions {
 pub enum SizeHint {
     Sized(u64),
     #[default]
-    Growable
+    Growable,
 }
 
 impl AllocOptions {
@@ -355,16 +447,16 @@ pub struct WritableFragment<'a, Backing: Read + Write + Seek> {
 
 impl<'a, Backing: Read + Write + Seek> WritableFragment<'a, Backing> {
     pub fn blob(&mut self) -> Result<BoundedSection<'_, Backing>> {
-        BoundedSection::new(&mut self.buf, self.ptr, self.size)
+        BoundedSection::new(self.buf, self.ptr, self.size)
     }
 
     pub fn commit(self, index: &mut RWFragmentStore<Backing>) -> Result<()> {
-        index.header.fragment_table.push(FragmentDescriptor {
+        index.header.push_fragment(FragmentDescriptor {
             id: self.fragment,
             sequence: self.sequence,
             offset: self.ptr,
             length: self.size,
-        });
+        })?;
 
         Ok(())
     }
@@ -394,16 +486,17 @@ pub type Pointer = u64;
 ///   and is intentionally fixed-size (24 bytes) for predictable seeking and storage.
 ///
 /// Ensure that the backing buffer is already seeked correctly prior to invoking `read`.
+#[derive(Debug, Clone)]
 struct FragmentDescriptor {
     id: FragmentID,
     sequence: u64,
     offset: u64,
-    length: u64
+    length: u64,
 }
 
-impl Storage for FragmentDescriptor {
-    fn read<Backing: Read + Seek>(mut source: Backing) -> Result<Self> {
-        let mut buffer = vec![0u8; FragmentDescriptor::size()];
+impl<Backing: Read + Write + Seek> Storage<Backing> for FragmentDescriptor {
+    fn read(mut source: Backing) -> Result<Self> {
+        let mut buffer = vec![0u8; Self::size()];
         source.read_exact(&mut buffer)?;
 
         Ok(Self {
@@ -414,8 +507,13 @@ impl Storage for FragmentDescriptor {
         })
     }
 
-    fn write<Backing: Write + Seek>(&self, source: Backing) -> Result<()> {
-        todo!()
+    fn write(&mut self, mut source: Backing) -> Result<()> {
+        source.write_all(&self.id.to_le_bytes())?;
+        source.write_all(&self.sequence.to_le_bytes())?;
+        source.write_all(&self.offset.to_le_bytes())?;
+        source.write_all(&self.length.to_le_bytes())?;
+
+        Ok(())
     }
 }
 
@@ -450,15 +548,15 @@ impl KnownSize for FragmentDescriptor {
 /// - Null (zero) pointers are permitted for `continuation` to denote list termination.
 ///
 /// Ensure the backing buffer is already seeked to the start of a valid table chunk.
-
+#[derive(Debug)]
 struct FragmentTablePart {
     continuation: Pointer, // We'll accept the use of null-pointers here because they're space efficient.
     fragments: Vec<FragmentDescriptor>,
 }
 
-impl Storage for FragmentTablePart {
-    fn read<Backing: Read + Seek>(mut source: Backing) -> Result<Self> {
-        let mut buffer = vec![0u8; 24];
+impl<Backing: Read + Write + Seek> Storage<Backing> for FragmentTablePart {
+    fn read(mut source: Backing) -> Result<Self> {
+        let mut buffer = vec![0u8; Self::size()];
         source.read_exact(&mut buffer)?;
 
         let (cap, len) = (u64::from_le_bytes(buffer[8..16].try_into()?), u64::from_le_bytes(buffer[16..24].try_into()?));
@@ -466,9 +564,6 @@ impl Storage for FragmentTablePart {
         if len > cap {
             return Err(FragmentError::LengthExceedsCapacity.into());
         }
-
-        let mut buffer = vec![0u8; cap as usize * FragmentDescriptor::size()];
-        source.read_exact(&mut buffer)?;
 
         let mut fragments = Vec::with_capacity(len as usize);
 
@@ -483,8 +578,22 @@ impl Storage for FragmentTablePart {
         })
     }
 
-    fn write<Backing: Write + Seek>(&self, source: Backing) -> Result<()> {
-        todo!()
+    fn write(&mut self, mut source: Backing) -> Result<()> {
+        source.write_all(self.continuation.to_le_bytes().as_slice())?;
+        source.write_all(self.fragments.capacity().to_le_bytes().as_slice())?;
+        source.write_all(self.fragments.len().to_le_bytes().as_slice())?;
+
+        for frag in &mut self.fragments {
+            frag.write(&mut source)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl KnownSize for FragmentTablePart {
+    fn size() -> usize {
+        24
     }
 }
 

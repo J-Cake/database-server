@@ -78,6 +78,7 @@ pub enum FragmentError {
     InvalidMagic,
     InvalidTable,
     LengthExceedsCapacity,
+    FailedToCreateNewFragmentTablePart,
 }
 
 impl std::error::Error for FragmentError {}

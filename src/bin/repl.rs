@@ -14,6 +14,9 @@ pub fn main() {
             cmd if cmd.starts_with("open") => {
                 db = Some(Database::open(cmd[5..].trim())?);
             },
+            cmd if cmd.starts_with("rusty-dump") => if let Some(db) = db.as_ref() {
+                println!("{:#?}", db);
+            }
             cmd => eprintln!("'{}' is not a recognised command", cmd.split_whitespace().next().unwrap()),
         };
         
