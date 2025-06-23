@@ -1,6 +1,6 @@
 #![feature(btree_cursors)]
 #![feature(exact_size_is_empty)]
-
+#![feature(sized_hierarchy)]
 extern crate core;
 
 use crate::rw::RWFragmentStore;
@@ -8,6 +8,8 @@ use error::*;
 use std::collections::HashMap;
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::{Read, Seek, Write};
+use std::marker::PhantomData;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -18,29 +20,24 @@ mod rwslice;
 mod store;
 
 #[derive(Debug)]
-pub struct Database {
-    backing: RWFragmentStore<File>,
+pub struct Database<Backing: Read + Write + Seek> {
+    backing: RWFragmentStore<Backing>,
 }
 
-impl Database {
-    pub fn open(index: impl AsRef<Path>) -> Result<Self> {
-        if index.as_ref().exists() {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(index)?;
-            
-            Ok(Self { backing: RWFragmentStore::new(file)? })
-        } else {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .truncate(true)
-                .open(index)?;
-            
-            Ok(Self { backing: RWFragmentStore::blank(file)? })
-        }
+impl<Backing: Read + Write + Seek> Database<Backing> {
+    #[inline]
+    pub fn new(backing: Backing) -> Result<Self> {
+        Ok(Self { backing: RWFragmentStore::new(backing)? })
+    }
+
+    /// Populates the backing buffer with the initial data, completely overwriting any existing data.
+    ///
+    /// **Please use this function extremely carefully.**
+    ///
+    pub fn destructive_reinitialise(mut backing: Backing, _danger: Danger) -> Result<()> {
+        RWFragmentStore::blank(&mut backing)?;
+
+        Ok(())
     }
 }
 
@@ -78,3 +75,5 @@ pub enum Value {
     // A collection of other fragments
     Collection { expected_length: u64, continuation: Option<FragmentID>, page: Vec<FragmentID> },
 }
+
+pub struct Danger;

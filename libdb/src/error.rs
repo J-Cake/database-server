@@ -48,26 +48,37 @@ macro_rules! multi_error {
 }
 
 multi_error! { global();
+    CustomError = String;
     ManualError = crate::error::ManualError;
     FragmentError = crate::error::FragmentError;
     IoError = std::io::Error;
     DecodeError = std::array::TryFromSliceError
 }
 
+impl global::Error {
+    pub fn custom(str: impl AsRef<str>) -> Self {
+        global::Inner::CustomError(str.as_ref().to_string()).into()
+    }
+}
+
 pub type Result<T> = ::std::result::Result<T, global::Error>;
+
+use std::marker::PointeeSized;
 pub use global::Error;
 
 #[derive(Debug, Clone)]
 pub enum ManualError {
-
+    BackingObjectMissing,
 }
 
 impl std::error::Error for ManualError {}
+
 impl std::fmt::Display for ManualError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(self, f)
     }
 }
+
 
 
 #[derive(Debug, Clone)]
@@ -82,6 +93,7 @@ pub enum FragmentError {
 }
 
 impl std::error::Error for FragmentError {}
+
 impl std::fmt::Display for FragmentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(self, f)

@@ -19,6 +19,7 @@ futures = "0.3.31"
 chrono = { version = "0.4.41", features = ["serde"] }
 libc = "0.2.172"
 libdb = { path = "libdb" }
+fs2 = { version = "0.4.3" }
 
 [build-dependencies]
 pkg-config = "0.3.32"
