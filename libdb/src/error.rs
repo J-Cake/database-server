@@ -52,6 +52,7 @@ multi_error! { global();
     ManualError = crate::error::ManualError;
     FragmentError = crate::error::FragmentError;
     IoError = std::io::Error;
+    SystemTimeError = std::time::SystemTimeError;
     DecodeError = std::array::TryFromSliceError
 }
 

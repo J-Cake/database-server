@@ -5,19 +5,14 @@ extern crate core;
 
 use crate::rw::RWFragmentStore;
 use error::*;
-use std::collections::HashMap;
-use std::fs::File;
-use std::fs::OpenOptions;
 use std::io::{Read, Seek, Write};
-use std::marker::PhantomData;
-use std::path::Path;
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 pub mod error;
 mod rw;
 mod rwslice;
 mod store;
+mod fragment;
 
 #[derive(Debug)]
 pub struct Database<Backing: Read + Write + Seek> {
@@ -35,6 +30,7 @@ impl<Backing: Read + Write + Seek> Database<Backing> {
     /// **Please use this function extremely carefully.**
     ///
     pub fn destructive_reinitialise(mut backing: Backing, _danger: Danger) -> Result<()> {
+        log::warn!("Destructively reinitialising database.");
         RWFragmentStore::blank(&mut backing)?;
 
         Ok(())
@@ -55,6 +51,11 @@ impl Fragment {
     pub fn validate_hash(self) -> Result<Self> {
         log::warn!("hash not verified - not implemented");
         Ok(self)
+    }
+
+    pub(crate) fn compute_hash(&self) -> Result<[u8; 32]> {
+        log::warn!("hash not verified - not implemented");
+        Ok([0u8; 32])
     }
 }
 
