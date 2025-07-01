@@ -1,11 +1,9 @@
 use fs2::FileExt;
 use libdb::error::Result;
-use libdb::{Danger, Database};
+use libdb::{AllocOptions, Danger, Database, FragmentID};
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::stderr;
-use std::io::BufRead;
-use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -40,6 +38,49 @@ pub fn main() {
 
                 db = Some(DBHandle::new(file)?);
             }
+            cmd if cmd.starts_with("new ") => {
+                if let Some(mut db) = db.as_mut() {
+                    let mut alloc = AllocOptions::default()
+                        .growable();
+
+                    let mut frag = db
+                        .file_mut()
+                        .expect("Database is not open");
+                    let mut frag = frag.db()?;
+                    let mut frag = frag
+                        .backing_mut()
+                        .new_fragment(alloc)?;
+
+                    let mut buf = Box::new([0u8; 1024 * 1024]);
+
+                    log::debug!("Fragment: {:#?}", &frag);
+
+                    todo!()
+                } else {
+                    log::warn!("Database is not open");
+                }
+            }
+            cmd if cmd.starts_with("read ") =>  {
+                if let Some(mut db) = db.as_mut() {
+                    for frag in cmd[5..].trim().split_whitespace() {
+                        if let Ok(frag) = frag.parse::<FragmentID>() {
+                            let mut db = db
+                                .file_mut()
+                                .expect("Database is not open");
+
+                            let mut db = db.db()?;
+                            let mut frag = db.open_fragment(frag)?;
+
+                            
+                            log::debug!("Fragment: {:#?}", &frag);
+                        } else {
+                            log::warn!("'{}' is not a valid fragment number", frag);
+                        }
+                    }
+                } else {
+                    log::warn!("Database is not open");
+                }
+            }
             cmd if cmd.starts_with("rusty-dump") =>
                 if let Some(db) = db.as_mut() {
                     println!("{:#?}", db.file_mut().unwrap().db()?);
@@ -50,7 +91,10 @@ pub fn main() {
             cmd if cmd.starts_with("exec") => {
                 eprintln!("This command is not implemented yet. Reading and writing to the database is currently being worked on.");
             }
-            cmd if cmd.starts_with("exit") => std::process::exit(0),
+            cmd if cmd.starts_with("exit") => {
+                drop(db.take());
+                std::process::exit(0)
+            },
             cmd => eprintln!("'{}' is not a recognised command", cmd.split_whitespace().next().unwrap()),
         };
 
@@ -71,6 +115,20 @@ impl DBHandle {
     fn file_mut(&'_ mut self) -> Option<FileGuard<'_>> {
         let file = self.backing.take()?;
         Some(FileGuard { file: Some(file), handler: self })
+    }
+}
+
+impl Drop for DBHandle {
+    fn drop(&mut self) {
+        if let Some(mut db) = self.file_mut() && let Ok(mut db) = db.db() {
+            db.flush()
+                .expect("Failed to flush database");
+        }
+
+        if let Some(ref mut backing) = self.backing {
+            backing.flush()
+                .expect("Failed to flush backing buffer");
+        }
     }
 }
 

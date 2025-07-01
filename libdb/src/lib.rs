@@ -1,6 +1,7 @@
 #![feature(btree_cursors)]
 #![feature(exact_size_is_empty)]
 #![feature(sized_hierarchy)]
+#![feature(assert_matches)]
 extern crate core;
 
 use crate::rw::RWFragmentStore;
@@ -10,8 +11,7 @@ use std::time::SystemTime;
 
 pub mod error;
 mod rw;
-mod rwslice;
-mod store;
+pub mod store;
 mod fragment;
 
 #[derive(Debug)]
@@ -34,6 +34,28 @@ impl<Backing: Read + Write + Seek> Database<Backing> {
         RWFragmentStore::blank(&mut backing)?;
 
         Ok(())
+    }
+    
+    // pub fn new_fragment(&'_ mut self) -> Result<FragmentHandle<'_, Backing>> {
+    //     self.backing.new_fragment(AllocOptions::default())
+    // }
+
+    /// Provides low-level access to the underlying backing object. **Not recommended for daily use**.
+    pub fn backing(&self) -> &RWFragmentStore<Backing> {
+        &self.backing
+    }
+
+    /// Provides low-level access to the underlying backing object. **Not recommended for daily use**.
+    pub fn backing_mut(&mut self) -> &mut RWFragmentStore<Backing> {
+        &mut self.backing
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        Ok(self.backing.backing.flush()?)
+    }
+    
+    pub fn open_fragment(&mut self, id: FragmentID) -> Result<FragmentHandle<'_, Backing>> {
+        self.backing.open_fragment(id)
     }
 }
 
@@ -78,3 +100,7 @@ pub enum Value {
 }
 
 pub struct Danger;
+
+pub use fragment::AllocOptions;
+use crate::fragment::FragmentHandle;
+use crate::store::FragmentStore;

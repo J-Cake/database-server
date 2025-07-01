@@ -1,6 +1,5 @@
 use crate::error::FragmentError;
 use crate::error::Result;
-use crate::rwslice::BoundedSection;
 use crate::store::FragmentStore;
 use crate::Fragment;
 use crate::FragmentID;
@@ -12,7 +11,7 @@ use std::io::Write;
 use std::time::Duration;
 use std::time::SystemTime;
 
-const PAGE_SIZE: usize = 4096;
+pub (crate) const PAGE_SIZE: usize = 4096;
 
 pub trait Storage<Backing>
 where
@@ -118,28 +117,8 @@ impl KnownSize for Fragment {
 
 #[derive(Debug)]
 pub struct RWFragmentStore<Backing: Read + Write + Seek> {
-    backing: Backing,
+    pub(crate) backing: Backing,
     pub(crate) header: RWFragmentStoreIndex,
-}
-
-impl<Backing: Read + Write + Seek> FragmentStore for RWFragmentStore<Backing> {
-    fn read_fragment(&mut self, id: FragmentID) -> Result<Fragment> {
-        if let Some(frag) = self
-            .header
-            .fragment_table()
-            .filter(|frag| frag.id == id)
-            .max_by(|i, j| i.sequence.cmp(&j.sequence))
-        {
-            self.backing.seek(SeekFrom::Start(frag.offset))?;
-            Fragment::read(&mut self.backing)
-        } else {
-            FragmentError::not_found(id)
-        }
-    }
-
-    fn write_fragment(&mut self, fragment: impl AsRef<Fragment>) -> Result<()> {
-        todo!()
-    }
 }
 
 impl<Backing: Read + Write + Seek> RWFragmentStore<Backing> {
@@ -207,7 +186,7 @@ pub(crate) struct RWFragmentStoreIndex {
     fragment_table_parts: Vec<FragmentTablePart>,
 
     /// Keeps a reference to the end of the backing buffer. Is useful when appending a new chunk.
-    end: Pointer,
+    pub(crate) end: Pointer,
 }
 
 impl<Backing: Read + Write + Seek> Storage<Backing> for RWFragmentStoreIndex {
@@ -330,7 +309,7 @@ impl RWFragmentStoreIndex {
 
         Ok((ptr, size))
     }
-
+ 
     fn mk_fragment_table_part(&mut self) -> Result<&mut FragmentTablePart> {
         let consumed = self.fragment_table().count() * FragmentDescriptor::size();
 
@@ -360,7 +339,7 @@ impl RWFragmentStoreIndex {
         self.fragment_table_parts.iter_mut().flat_map(|part| part.fragments.iter_mut())
     }
 
-    pub fn push_fragment(&mut self, fragment: FragmentDescriptor) -> Result<()> {
+    pub fn push_fragment_descriptor(&mut self, fragment: FragmentDescriptor) -> Result<()> {
         match self.fragment_table_parts.last_mut() {
             Some(last) if last.len() < last.cap() => last.fragments.push(fragment),
             _ => self.mk_fragment_table_part()?.fragments.push(fragment),
