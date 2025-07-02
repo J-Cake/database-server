@@ -16,13 +16,13 @@ mod fragment;
 
 #[derive(Debug)]
 pub struct Database<Backing: Read + Write + Seek> {
-    backing: RWFragmentStore<Backing>,
+    data_source: RWFragmentStore<Backing>,
 }
 
 impl<Backing: Read + Write + Seek> Database<Backing> {
     #[inline]
     pub fn new(backing: Backing) -> Result<Self> {
-        Ok(Self { backing: RWFragmentStore::new(backing)? })
+        Ok(Self { data_source: RWFragmentStore::new(backing)? })
     }
 
     /// Populates the backing buffer with the initial data, completely overwriting any existing data.
@@ -41,21 +41,29 @@ impl<Backing: Read + Write + Seek> Database<Backing> {
     // }
 
     /// Provides low-level access to the underlying backing object. **Not recommended for daily use**.
-    pub fn backing(&self) -> &RWFragmentStore<Backing> {
-        &self.backing
+    pub fn data_source(&self) -> &RWFragmentStore<Backing> {
+        &self.data_source
     }
 
     /// Provides low-level access to the underlying backing object. **Not recommended for daily use**.
-    pub fn backing_mut(&mut self) -> &mut RWFragmentStore<Backing> {
-        &mut self.backing
+    pub fn data_source_mut(&mut self) -> &mut RWFragmentStore<Backing> {
+        &mut self.data_source
+    }
+
+    pub fn backing(&self) -> &Backing {
+        &self.data_source.backing
+    }
+
+    pub fn backing_mut(&mut self) -> &mut Backing {
+        &mut self.data_source.backing
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        Ok(self.backing.backing.flush()?)
+        Ok(self.data_source.backing.flush()?)
     }
-    
+
     pub fn open_fragment(&mut self, id: FragmentID) -> Result<FragmentHandle<'_, Backing>> {
-        self.backing.open_fragment(id)
+        self.data_source.open_fragment(id)
     }
 }
 
@@ -102,5 +110,5 @@ pub enum Value {
 pub struct Danger;
 
 pub use fragment::AllocOptions;
-use crate::fragment::FragmentHandle;
+pub use crate::fragment::FragmentHandle;
 use crate::store::FragmentStore;

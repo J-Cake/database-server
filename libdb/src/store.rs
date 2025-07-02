@@ -2,7 +2,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use crate::{Fragment, FragmentID};
 use crate::error::{FragmentError, Result};
-use crate::fragment::{FragmentHandle, FragmentType, ReadonlyFragment, SizedFragment};
+use crate::fragment::{FragmentHandle, FragmentType, SizedFragment};
 use crate::rw::RWFragmentStore;
 
 pub trait FragmentStore<Backing: Read + Write + Seek> {
@@ -17,18 +17,18 @@ impl<Backing: Read + Write + Seek> FragmentStore<Backing> for RWFragmentStore<Ba
             .cloned() {
 
             Ok(FragmentHandle {
-                fragment_type: FragmentType::ReadOnly(ReadonlyFragment(SizedFragment {
-                    index: self,
+                index: self,
 
-                    fragment: frag.id,
-                    sequence: frag.sequence,
+                id: frag.id,
+                sequence: frag.sequence,
 
+                fragment_type: FragmentType::ReadOnly(SizedFragment {
                     cursor: 0,
                     ptr: frag.offset,
                     size: frag.length,
 
                     max_size: Some(0), // Disable writes
-                }))
+                })
             })
         } else {
             Err(FragmentError::NoFound(fragment).into())

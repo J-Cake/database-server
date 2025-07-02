@@ -3,7 +3,7 @@ use libdb::error::Result;
 use libdb::{AllocOptions, Danger, Database, FragmentID};
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::stderr;
+use std::io::{stderr, BufRead, BufReader, Read, Seek};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -17,14 +17,14 @@ pub fn main() {
 
     print_errors(|| {
         match prompt("> ") {
-            cmd if cmd.starts_with("open") => {
-                let path = PathBuf::from(&cmd[5..].trim());
+            cmd if cmd.starts_with("open-db ") => {
+                let path = PathBuf::from(&cmd[8..].trim());
                 let mut file = OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create(true)
                     .truncate(false)
-                    .open(path)?;
+                    .open(&path)?;
 
                 file.lock_exclusive()?;
                 if file.metadata()?.size() == 0 {
@@ -36,60 +36,12 @@ pub fn main() {
                     }
                 }
 
-                db = Some(DBHandle::new(file)?);
-            }
-            cmd if cmd.starts_with("new ") => {
-                if let Some(mut db) = db.as_mut() {
-                    let mut alloc = AllocOptions::default()
-                        .growable();
+                let mut handle = DBHandle::new(file)?;
 
-                    let mut frag = db
-                        .file_mut()
-                        .expect("Database is not open");
-                    let mut frag = frag.db()?;
-                    let mut frag = frag
-                        .backing_mut()
-                        .new_fragment(alloc)?;
+                with_database(&mut handle.file_mut().ok_or(libdb::error::Error::custom("Database not open"))?.db()?, &path);
 
-                    let mut buf = Box::new([0u8; 1024 * 1024]);
+                db = Some(handle);
 
-                    log::debug!("Fragment: {:#?}", &frag);
-
-                    todo!()
-                } else {
-                    log::warn!("Database is not open");
-                }
-            }
-            cmd if cmd.starts_with("read ") =>  {
-                if let Some(mut db) = db.as_mut() {
-                    for frag in cmd[5..].trim().split_whitespace() {
-                        if let Ok(frag) = frag.parse::<FragmentID>() {
-                            let mut db = db
-                                .file_mut()
-                                .expect("Database is not open");
-
-                            let mut db = db.db()?;
-                            let mut frag = db.open_fragment(frag)?;
-
-                            
-                            log::debug!("Fragment: {:#?}", &frag);
-                        } else {
-                            log::warn!("'{}' is not a valid fragment number", frag);
-                        }
-                    }
-                } else {
-                    log::warn!("Database is not open");
-                }
-            }
-            cmd if cmd.starts_with("rusty-dump") =>
-                if let Some(db) = db.as_mut() {
-                    println!("{:#?}", db.file_mut().unwrap().db()?);
-                },
-            cmd if cmd.starts_with("print") => {
-                eprintln!("This command is not implemented yet. Use `rusty-dump` instead to view the in-memory state of the database until it's ready");
-            }
-            cmd if cmd.starts_with("exec") => {
-                eprintln!("This command is not implemented yet. Reading and writing to the database is currently being worked on.");
             }
             cmd if cmd.starts_with("exit") => {
                 drop(db.take());
@@ -171,4 +123,66 @@ fn prompt(prompt: impl AsRef<str>) -> String {
     };
 
     String::new()
+}
+
+fn with_database(db: &mut Database<&mut File>, path: impl AsRef<std::path::Path>) {
+    print_errors(|| {
+        let cmd = prompt(format!("- ({}) > ", path.as_ref().display()));
+        let mut cmd = cmd
+            .split_whitespace()
+            .peekable();
+
+        match cmd.next() {
+            Some("open") => {
+                let Some(id) = cmd.next().map(str::parse::<FragmentID>)
+                    .transpose()
+                    .map_err(libdb::error::Error::from)? else {
+                    log::error!("No fragment ID specified");
+                    return Ok(());
+                };
+
+                let frag = db.open_fragment(id)?;
+
+                with_fragment(frag);
+            },
+            Some("rusty-dump") => log::debug!("{db:#?}"),
+            Some(cmd) => eprintln!("'{cmd}' is not a recognised command"),
+            None => ()
+        };
+
+        Ok(())
+    })
+}
+
+fn with_fragment(mut frag: libdb::FragmentHandle<impl Read + Write + Seek>) {
+    print_errors(|| {
+        let cmd = prompt(format!("--- [{}] > ", frag.id));
+        let mut cmd = cmd
+            .split_whitespace()
+            .peekable();
+
+        match cmd.next() {
+            Some("print") => {
+                let frag = BufReader::new(&mut frag);
+                for line in frag.lines() {
+                    match line {
+                        Ok(line) => println!("{}", line),
+                        Err(e) => eprintln!("{:?}", e),
+                    }
+                }
+            },
+            Some("write") => {
+                let args = cmd
+                    .fold(String::new(), |a, b| a + b + " ")
+                    .trim()
+                    .to_owned();
+
+                frag.write_all(args.as_bytes())?;
+            }
+            Some(cmd) => eprintln!("'{}' is not a recognised command", cmd),
+            None => ()
+        }
+
+        Ok(())
+    })
 }

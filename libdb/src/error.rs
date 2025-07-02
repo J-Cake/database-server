@@ -53,7 +53,9 @@ multi_error! { global();
     FragmentError = crate::error::FragmentError;
     IoError = std::io::Error;
     SystemTimeError = std::time::SystemTimeError;
-    DecodeError = std::array::TryFromSliceError
+    DecodeError = std::array::TryFromSliceError;
+    ParseIntError = std::num::ParseIntError;
+    ParseFloatError = std::num::ParseFloatError
 }
 
 impl global::Error {
