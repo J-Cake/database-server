@@ -128,9 +128,12 @@ impl<'a, Backing: Buffer> FragmentHandle<'a, Backing> {
         Ok(())
     }
 
-    fn check_if_readonly_and_copy_if_necessary(&mut self, buf: &[u8]) -> std::io::Result<Option<usize>> {
-        todo!()
-
+    pub fn size(&self) -> usize {
+        match self.fragment_type {
+            FragmentType::ReadOnly(SizedFragment { size, .. }) | FragmentType::Sized(SizedFragment { size, .. }) => size as usize,
+            FragmentType::Dynamic(DynamicFragment { buffer: InlineBuffer::Buffered(ref buf), .. }) => buf.get_ref().len(),
+            FragmentType::Dynamic(DynamicFragment { buffer: InlineBuffer::WriteThrough(.., size), .. }) => size as usize,
+        }
     }
 }
 
@@ -142,6 +145,7 @@ impl<'a, Backing: Buffer> Read for FragmentHandle<'a, Backing> {
                 self.index.backing.seek(SeekFrom::Start(frag.ptr + frag.cursor))?;
                 let read = self.index.backing.read(buf)?;
                 self.index.backing.seek(SeekFrom::Start(start))?;
+                frag.cursor += read as u64;
                 Ok(read)
             }
             FragmentType::Dynamic(DynamicFragment {
@@ -177,6 +181,7 @@ impl<'a, Backing: Buffer> Write for FragmentHandle<'a, Backing> {
                 self.index.backing.seek(SeekFrom::Start(frag.ptr + frag.cursor))?;
                 let written = self.index.backing.write(buf)?;
                 self.index.backing.seek(SeekFrom::Start(start))?;
+                frag.cursor += written as u64;
                 Ok(written)
             },
             FragmentType::Dynamic(ref mut frag) => {

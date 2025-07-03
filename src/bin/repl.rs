@@ -3,7 +3,7 @@ use libdb::error::Result;
 use libdb::{AllocOptions, Danger, Database, FragmentID};
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::io::{stderr, BufRead, BufReader, Read, Seek};
+use std::io::{stderr, BufRead, BufReader, BufWriter, Read, Seek};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ pub fn main() {
 
     env_logger::init();
 
-    print_errors(|| {
+    print_errors(|exit| {
         match prompt("> ") {
             cmd if cmd.starts_with("open-db ") => {
                 let path = PathBuf::from(&cmd[8..].trim());
@@ -45,7 +45,7 @@ pub fn main() {
             }
             cmd if cmd.starts_with("exit") => {
                 drop(db.take());
-                std::process::exit(0)
+                *exit = true;
             },
             cmd => eprintln!("'{}' is not a recognised command", cmd.split_whitespace().next().unwrap()),
         };
@@ -103,10 +103,11 @@ impl<'a> FileGuard<'a> {
     }
 }
 
-fn print_errors(mut handler: impl FnMut() -> Result<()>) {
-    loop {
-        if let Err(e) = handler() {
-            eprintln!("{:?}", e);
+fn print_errors(mut handler: impl FnMut(&mut bool) -> Result<()>) {
+    let mut r#break = false;
+    while !r#break {
+        if let Err(e) = handler(&mut r#break) {
+            log::error!("{e:?}");
         }
     }
 }
@@ -126,7 +127,7 @@ fn prompt(prompt: impl AsRef<str>) -> String {
 }
 
 fn with_database(db: &mut Database<&mut File>, path: impl AsRef<std::path::Path>) {
-    print_errors(|| {
+    print_errors(|exit| {
         let cmd = prompt(format!("- ({}) > ", path.as_ref().display()));
         let mut cmd = cmd
             .split_whitespace()
@@ -146,6 +147,7 @@ fn with_database(db: &mut Database<&mut File>, path: impl AsRef<std::path::Path>
                 with_fragment(frag);
             },
             Some("rusty-dump") => log::debug!("{db:#?}"),
+            Some("exit") => *exit = true,
             Some(cmd) => eprintln!("'{cmd}' is not a recognised command"),
             None => ()
         };
@@ -155,21 +157,26 @@ fn with_database(db: &mut Database<&mut File>, path: impl AsRef<std::path::Path>
 }
 
 fn with_fragment(mut frag: libdb::FragmentHandle<impl Read + Write + Seek>) {
-    print_errors(|| {
-        let cmd = prompt(format!("--- [{}] > ", frag.id));
+    print_errors(|exit| {
+        let cmd = prompt(format!("--- [{}{}] > ", frag.id, 'i'));
         let mut cmd = cmd
             .split_whitespace()
             .peekable();
 
         match cmd.next() {
             Some("print") => {
-                let frag = BufReader::new(&mut frag);
-                for line in frag.lines() {
-                    match line {
-                        Ok(line) => println!("{}", line),
-                        Err(e) => eprintln!("{:?}", e),
-                    }
+                let mut buf = vec![0u8; frag.size().min(1024 * 1024)];
+                log::debug!("Reading fragment: {} bytes", frag.size());
+                let mut stdout = BufWriter::new(std::io::stdout());
+
+                while let Ok(len) = frag.read(&mut buf) && len > 0 {
+                    log::debug!("Read {len} bytes");
+                    stdout.write_all(&buf[..len])?;
                 }
+
+                stdout.write_all(b"\n")?;
+
+                stdout.flush()?;
             },
             Some("write") => {
                 let args = cmd
@@ -179,6 +186,10 @@ fn with_fragment(mut frag: libdb::FragmentHandle<impl Read + Write + Seek>) {
 
                 frag.write_all(args.as_bytes())?;
             }
+            Some("commit") => {
+                frag.flush()?;
+                *exit = true;
+            },
             Some(cmd) => eprintln!("'{}' is not a recognised command", cmd),
             None => ()
         }
